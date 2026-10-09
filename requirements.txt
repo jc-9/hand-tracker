@@ -4,3 +4,6 @@
 mediapipe==0.10.35
 opencv-contrib-python
 numpy
+# Pinned 2026-10-09: depthai v2 classic API (proven on this host in
+# LUXONIS_EXPERIMENTS/stereoimage). Do NOT upgrade to v3 (new API).
+depthai==2.33.0.0

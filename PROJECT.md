@@ -5,15 +5,16 @@
 
 ## Stack / environment
 - Python 3.13.15 venv at `venv/`
-- Deps pinned (see requirements.txt): mediapipe==0.10.35, opencv-contrib-python, numpy (2.5.3)
-- Cameras: HD USB Camera default (/dev/video2, OpenCV index 2); Integrated Camera (/dev/video0, index 0)
-- Run: `venv/bin/python app.py [--camera 2] [--width 1280 --height 720]` or `./run.sh`
+- Deps pinned (see requirements.txt): mediapipe==0.10.35, opencv-contrib-python, numpy (2.5.3), depthai==2.33.0.0 (v2 classic API)
+- Cameras: HD USB Camera (/dev/video2, index 2, currently UNPLUGGED 2026-10-09); Integrated Camera (index 0); Luxonis OAK-D source "oak" (Myriad X, MxId 14442C10C11DC0D200, udev rule installed)
+- Run: `venv/bin/python app.py [--camera {2,0,oak}] [--mode {menu,setup,tracker}]` or `./run.sh`
 
 ## How it works
-- `app.py`: menu app. `Menu` window: [S]etup / [T]racker / [Q]uit (+ C/R/D/trail shortcut keys, shared settings).
-- Camera Setup window (use once): live view + big FOCUS score + magnified center inset + crosshair for mechanical lens-ring adjustment. C/R/S snapshot, ESC back to menu.
-- Hand Tracker window: MediaPipe Hands (auto falls back to skin detector) -> bbox + 21 landmarks per hand, fading trails (default 3s, slider on window). No focus overlay here. ESC back to menu.
-- `--mode {menu,setup,tracker}` to start directly; `--no-gui` self-tests per mode.
+- `app.py`: menu app. `Menu` window: [S]etup / [T]racker / [Q]uit (+ C source/R/D/trail shortcut keys, shared settings). Sources: USB 2/0 or OAK-D ("oak"); setup/tracker dispatch to USB or OAK sessions; C reopens on the new source.
+- Camera Setup window (use once): live view + big FOCUS score + magnified center inset + crosshair for mechanical lens-ring adjustment (USB) or aim/exposure (OAK-D). C/R/S snapshot, ESC back to menu. OAK-D R cycles internal height 480/640/800 (reboots pipeline).
+- Hand Tracker window: USB = MediaPipe Hands (auto falls back to skin detector); OAK-D = on-device palm+landmark NNs (`oak_hands.py`, solo edge pipeline, host only renders). Fading trails (default 3s, slider on window). No focus overlay here. ESC back to menu.
+- `--mode {menu,setup,tracker} --camera {2,0,oak}` to start directly; `--no-gui` self-tests per mode. Missing source exits 1 (SourceError/OakUnavailable), never silent 0.
+- `oak_mpu.py`: trimmed helpers vendored from geaxgx/depthai_hand_tracker (MIT). `tests/test_oak_parse.py`: offline marshal/extract/det-tuple tests (no device needed).
 
 ## Decisions
 - 2026-10-08: New area COMPUTER_VISION (user choice) + folder hand_tracker_100826.
@@ -31,6 +32,8 @@
 - 2026-10-08: Restructured per user request: menu app (Menu window: S=setup, T=tracker, Q=quit). Focus zoom lives ONLY in Camera Setup window; tracker has no focus overlay. Verified: headless tracker 20 frames mediapipe OK; headless setup 20 frames + verify_setup.jpg (212KB) OK; Menu window mapped on screen (PID 1536102). CIFS clean.
 - 2026-10-08: Menu launcher: ~/.local/share/applications/hand-tracker.desktop (Name=Hand Tracker, Icon=camera-web, AudioVideo), desktop-file-validate clean, DB updated. run.sh has flock single-instance guard (relaunch notifies instead of double-grabbing cam). Lesson: gtk-launch blocks — launch detached via setsid+nohup. Verified end-to-end: killed old inst, gtk-launch hand-tracker -> Menu mapped (PID 1593543). Search "Hand Tracker" in the app menu to launch.
 - 2026-10-08: Custom icon (user asked: hand + bounding box): assets/make_icon.py draws white hand pictogram in green detector box on dark rounded square; SVG + PNG 48/64/128/256. v1 fingers merged (mitten) -> spread/slimmed, verified visually. Installed to hicolor theme, .desktop Icon=hand-tracker, icon cache rebuilt. Verified Gtk has_icon=True, desktop-validate clean, CIFS clean.
+- 2026-10-08: Uploaded to GitHub: jc-9/hand-tracker (public). .gitignore excludes venv/models/snapshots/verify images; added README.md. Commit e11235e pushed to main, remote HEAD matches. CIFS clean.
+- 2026-10-09: OAK-D migration (user request: different camera, all programming on OAK-D). Reused LUXONIS_EXPERIMENTS knowledge: depthai==2.33.0.0 v2 API, udev rule present, MxId 14442C10C11DC0D200. New: oak_hands.py (solo edge pipeline, palm+landmark NNs on Myriad X) + oak_mpu.py + oak_models blobs + template (MIT, geaxgx attribution in README) + tests/test_oak_parse.py (all pass, no device). app.py session refactor (USB/OAK setup+tracker, C reopens, exit 1 on missing source). Verified: USB cam0 headless 15 frames mediapipe OK; oak-missing exits 1 with clear msg; fixed silent-exit-0 regression (SourceError). NOT yet live-verified: OAK-D unplugged (no 03e7 on USB) + HD USB cam unplugged (only video0/1 present). Left user's screen_recorder proc (1628802) alone. Uncommitted - push on request.
 
 ## Open questions
 - None. Future: record trail video, handedness labels, multi-cam side-by-side.

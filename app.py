@@ -3,19 +3,20 @@
 
   Menu (small app window):
     [S] Camera setup  - live view + focus zoom, pick camera/resolution.
-                        Use once to adjust the mechanical lens ring.
     [T] Hand tracker  - detector boxes + 21 landmarks + motion trails.
     [Q] Quit.
 
-  Camera Setup window: live view, big FOCUS sharpness score, magnified
-  center inset + crosshair. Turn the physical lens ring to maximize the
-  score. C = switch camera, R = cycle resolution, S = snapshot, ESC = menu.
+Camera sources (C cycles): HD USB cam (2), integrated cam (0), OAK-D ("oak").
+On the OAK-D all ML runs on-device (Myriad X): palm-detection NN +
+hand-landmark NN via the manager Script node (see oak_hands.py); the host
+only renders, trails, and shows the menu. USB cams use MediaPipe on host
+(auto-falls back to a skin/contour detector).
 
-  Hand Tracker window: MediaPipe (or skin fallback) boxes + trails of the
-  last N seconds. H = help, S = snapshot, D = detector, +/- = trail,
-  ESC = menu. TrailSecs slider sits on this window.
-
-Detectors (--detector): auto | mediapipe | skin.
+  Camera Setup window: live view + big FOCUS score + magnified center inset
+  + crosshair (lens-ring aid on USB cams; aim/exposure check on OAK-D).
+  C = switch source, R = resolution, S = snapshot, ESC = menu.
+  Hand Tracker window: boxes + trails of the last N seconds.
+  H = help, S = snapshot, D = detector (USB only), +/- = trail, ESC = menu.
 """
 
 import argparse
@@ -35,8 +36,9 @@ MODEL_URL = (
 MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "models", "hand_landmarker.task")
 
-CAMERA_CANDIDATES = [2, 0]  # default HD USB first, then integrated
+CAMERA_CANDIDATES = [2, 0, "oak"]  # HD USB, integrated, Luxonis OAK-D
 RESOLUTIONS = [(640, 480), (960, 540), (1280, 720)]
+OAK_HEIGHTS = [480, 640, 800]  # internal frame height presets for OAK-D
 TRAIL_COLORS = [(0, 255, 0), (255, 200, 0), (0, 200, 255), (255, 0, 255)]
 
 HAND_CONNECTIONS = [
@@ -48,14 +50,31 @@ HAND_CONNECTIONS = [
 ]
 
 
+class OakUnavailable(Exception):
+    """Raised when the OAK-D source is selected but no device is present."""
+
+
+class SourceError(Exception):
+    """Raised when a camera source cannot be opened."""
+
+
+def parse_cam(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 class Settings:
     def __init__(self, args):
-        self.cams = [args.camera] + [c for c in CAMERA_CANDIDATES if c != args.camera]
+        want = parse_cam(args.camera)
+        self.cams = [want] + [c for c in CAMERA_CANDIDATES if c != want]
         self.cam_pos = 0
         self.res_pos = 2
         for i, (w, h) in enumerate(RESOLUTIONS):
             if w == args.width and h == args.height:
                 self.res_pos = i
+        self.oak_height = 640
         self.detector = args.detector  # auto|mediapipe|skin (resolved on tracker entry)
         self.trail_secs = float(np.clip(args.trail, 1, 10))
         self.mp_backend = None
@@ -69,6 +88,9 @@ class Settings:
         return RESOLUTIONS[self.res_pos]
 
     def summary(self):
+        if self.cam == "oak":
+            return (f"cam oak h={self.oak_height} | det oak-ondevice | "
+                    f"trail {self.trail_secs:.0f}s")
         w, h = self.res
         return f"cam {self.cam} {w}x{h} | det {self.detector} | trail {self.trail_secs:.0f}s"
 
@@ -212,6 +234,16 @@ def ensure_tracker_backend(st, headless=False):
     return True
 
 
+def open_oak(st):
+    """Boot the OAK-D edge pipeline. Raises OakUnavailable without a device."""
+    from oak_hands import OakHandTracker
+    print(f"[oak] booting OAK-D (height preset {st.oak_height})...")
+    try:
+        return OakHandTracker(internal_frame_height=st.oak_height)
+    except RuntimeError as e:
+        raise OakUnavailable(str(e))
+
+
 # ---------------------------------------------------------------- menu ---
 
 def menu_loop(st):
@@ -223,7 +255,7 @@ def menu_loop(st):
         put_text(img, "HAND TRACKER", (20, 40), 1.0, (0, 255, 0))
         put_text(img, "[S] Camera setup  - focus lens, pick camera", (20, 95))
         put_text(img, "[T] Hand tracker  - boxes + motion trails", (20, 130))
-        put_text(img, "[C] camera  [R] resolution  [D] detector  [+/-] trail", (20, 175), 0.5)
+        put_text(img, "[C] source [R] res [D] detector [+/-] trail", (20, 175), 0.5)
         put_text(img, "[Q] Quit", (20, 210))
         put_text(img, st.summary(), (20, 265), 0.55, (0, 255, 255))
         put_text(img, "Setup once, then run the tracker.", (20, 300), 0.5, (180, 180, 180))
@@ -238,7 +270,11 @@ def menu_loop(st):
         if key in (ord("c"), ord("C")):
             st.cam_pos = (st.cam_pos + 1) % len(st.cams)
         elif key in (ord("r"), ord("R")):
-            st.res_pos = (st.res_pos + 1) % len(RESOLUTIONS)
+            if st.cam == "oak":
+                i = OAK_HEIGHTS.index(st.oak_height)
+                st.oak_height = OAK_HEIGHTS[(i + 1) % len(OAK_HEIGHTS)]
+            else:
+                st.res_pos = (st.res_pos + 1) % len(RESOLUTIONS)
         elif key in (ord("d"), ord("D")):
             order = ["auto", "mediapipe", "skin"]
             st.detector = order[(order.index(st.detector) + 1) % len(order)]
@@ -263,10 +299,8 @@ def draw_setup_overlay(frame):
     put_text(frame, f"FOCUS {s_c:.0f} (full {s_all:.0f})", (10, 40), 1.0, col)
     put_text(frame, "Turn the lens ring to maximize. ESC = back to menu.",
              (10, 75), 0.55)
-    # crosshair at frame center
     cx, cy = W // 2, H // 2
     cv2.drawMarker(frame, (cx, cy), col, cv2.MARKER_CROSS, 30, 2)
-    # magnified inset, bottom-right
     inset = cv2.resize(crop, (cw * 2, ch * 2), interpolation=cv2.INTER_LINEAR)
     inset = cv2.cvtColor(inset, cv2.COLOR_GRAY2BGR)
     ih, iw = inset.shape[:2]
@@ -276,16 +310,17 @@ def draw_setup_overlay(frame):
     return s_c
 
 
-def setup_loop(st, headless=False, test_frames=20):
+def usb_setup_session(st, headless=False, test_frames=20):
+    """Returns 'menu' or 'reopen' (source changed)."""
     w, h = st.res
     cap = open_camera(st.cam, w, h)
     if cap is None:
-        print(f"[error] cannot open camera {st.cam}.")
-        return False
-    print(f"[setup] camera {st.cam} @ {w}x{h} - ESC returns to menu")
+        raise SourceError(f"cannot open USB camera {st.cam}")
+    print(f"[setup] USB camera {st.cam} @ {w}x{h} - ESC returns to menu")
     if not headless:
         cv2.namedWindow("Camera Setup", cv2.WINDOW_NORMAL)
     n = 0
+    action = "menu"
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -294,7 +329,7 @@ def setup_loop(st, headless=False, test_frames=20):
         n += 1
         s_c = draw_setup_overlay(frame)
         put_text(frame, f"cam {st.cam} {frame.shape[1]}x{frame.shape[0]} "
-                        f"[C]amera [R]es [S]nap",
+                        f"[C]am [R]es [S]nap",
                  (10, frame.shape[0] - 12), 0.55)
         if headless:
             if n == 1 or n % 10 == 0:
@@ -310,10 +345,8 @@ def setup_loop(st, headless=False, test_frames=20):
             break
         elif key in (ord("c"), ord("C")):
             st.cam_pos = (st.cam_pos + 1) % len(st.cams)
-            cap.release()
-            w, h = st.res
-            cap = open_camera(st.cam, w, h)
-            print(f"[setup] camera -> {st.cam}")
+            action = "reopen"
+            break
         elif key in (ord("r"), ord("R")):
             st.res_pos = (st.res_pos + 1) % len(RESOLUTIONS)
             w, h = st.res
@@ -327,20 +360,122 @@ def setup_loop(st, headless=False, test_frames=20):
     cap.release()
     if not headless:
         cv2.destroyWindow("Camera Setup")
-    return True
+    return action
+
+
+def oak_setup_session(st, headless=False, test_frames=20):
+    """Setup view on OAK-D RGB frames. Returns 'menu' or 'reopen'."""
+    tracker = open_oak(st)
+    print(f"[oak-setup] {tracker.img_w}x{tracker.img_h} - ESC returns to menu")
+    if not headless:
+        cv2.namedWindow("Camera Setup", cv2.WINDOW_NORMAL)
+    n = 0
+    action = "menu"
+    try:
+        while True:
+            frame, _hands = tracker.next_frame()
+            n += 1
+            s_c = draw_setup_overlay(frame)
+            put_text(frame, f"OAK-D {frame.shape[1]}x{frame.shape[0]} "
+                            f"[C]am [R]es [S]nap",
+                     (10, frame.shape[0] - 12), 0.55)
+            if headless:
+                if n == 1 or n % 10 == 0:
+                    print(f"[selftest-oak-setup] frame {n}: focus={s_c:.0f}")
+                if n == test_frames:
+                    cv2.imwrite("verify_oak_setup.jpg", frame)
+                    print(f"[selftest-oak-setup] OK: {n} frames, saved verify_oak_setup.jpg")
+                    break
+                continue
+            cv2.imshow("Camera Setup", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q"), ord("Q")):
+                break
+            elif key in (ord("c"), ord("C")):
+                st.cam_pos = (st.cam_pos + 1) % len(st.cams)
+                action = "reopen"
+                break
+            elif key in (ord("r"), ord("R")):
+                i = OAK_HEIGHTS.index(st.oak_height)
+                st.oak_height = OAK_HEIGHTS[(i + 1) % len(OAK_HEIGHTS)]
+                action = "reopen"
+                break
+            elif key in (ord("s"), ord("S")):
+                fn = f"snapshots/oak_setup_{datetime.now():%Y%m%d_%H%M%S}.jpg"
+                cv2.imwrite(fn, frame)
+                print(f"[info] saved {fn}")
+    finally:
+        tracker.close()
+        if not headless:
+            try:
+                cv2.destroyWindow("Camera Setup")
+            except Exception:
+                pass
+    return action
+
+
+def setup_loop(st, headless=False, test_frames=20):
+    while True:
+        try:
+            if st.cam == "oak":
+                action = oak_setup_session(st, headless, test_frames)
+            else:
+                action = usb_setup_session(st, headless, test_frames)
+        except OakUnavailable as e:
+            print(f"[setup] {e}")
+            return False
+        except SourceError as e:
+            print(f"[setup] {e}")
+            return False
+        if headless or action == "menu":
+            return True
 
 
 # -------------------------------------------------------------- tracker ---
 
-def tracker_loop(st, headless=False, test_frames=30):
+def draw_dets_and_trails(frame, dets, trails, now, trail_secs, det_name):
+    hands_now = len(dets)
+    for slot, d in enumerate(dets):
+        x1, y1, x2, y2, cx, cy, pts, handed = d
+        color = TRAIL_COLORS[slot % len(TRAIL_COLORS)]
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        label = f"Hand {slot+1} {handed}".strip() + f" [{det_name}]"
+        cv2.putText(frame, label, (x1, max(0, y1 - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+        if pts is not None:
+            draw_hand_skeleton(frame, pts, color)
+        trails[slot].append((cx, cy, now))
+        cv2.circle(frame, (cx, cy), 5, color, -1)
+    cutoff = now - trail_secs
+    for slot in list(trails.keys()):
+        dq = trails[slot]
+        while dq and dq[0][2] < cutoff:
+            dq.popleft()
+        if slot >= max(1, hands_now) and not dets:
+            continue
+        color = TRAIL_COLORS[slot % len(TRAIL_COLORS)]
+        pts_t = list(dq)
+        for i in range(1, len(pts_t)):
+            age = now - pts_t[i][2]
+            a = max(0.15, 1.0 - age / trail_secs)
+            cv2.line(frame, pts_t[i - 1][:2], pts_t[i][:2],
+                     color, max(1, int(4 * a)), cv2.LINE_AA)
+        if pts_t:
+            cv2.putText(frame, f"trail {len(pts_t)}pts/{trail_secs:.0f}s",
+                        (pts_t[-1][0] + 10, pts_t[-1][1]),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+    return hands_now
+
+
+def usb_tracker_session(st, headless=False, test_frames=30):
+    """Returns 'menu' or 'reopen'. USB cams, host-side MediaPipe/skin."""
     if not ensure_tracker_backend(st, headless=headless):
-        return False
+        return "menu"
     w, h = st.res
     cap = open_camera(st.cam, w, h)
     if cap is None:
-        print(f"[error] cannot open camera {st.cam}.")
-        return False
-    print(f"[tracker] camera {st.cam} @ {w}x{h} [{st.detector}] - ESC returns to menu")
+        raise SourceError(f"cannot open USB camera {st.cam}")
+    print(f"[tracker] USB camera {st.cam} @ {w}x{h} [{st.detector}] - ESC returns to menu")
     trails = collections.defaultdict(collections.deque)
     show_help = True
     if not headless:
@@ -351,9 +486,9 @@ def tracker_loop(st, headless=False, test_frames=30):
         cv2.createTrackbar("TrailSecs", "Hand Tracker",
                            int(st.trail_secs), 10, on_trail)
     n_frames = 0
-    hands_now = 0
     t0 = time.time()
     fps = 0.0
+    action = "menu"
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -376,46 +511,14 @@ def tracker_loop(st, headless=False, test_frames=30):
             boxes, _ = skin_detect(frame)
             dets = [(x1, y1, x2, y2, cx, cy, None, "")
                     for x1, y1, x2, y2, cx, cy, _c in boxes]
-        hands_now = len(dets)
-
-        for slot, d in enumerate(dets):
-            x1, y1, x2, y2, cx, cy, pts, handed = d
-            color = TRAIL_COLORS[slot % len(TRAIL_COLORS)]
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            label = f"Hand {slot+1} {handed}".strip() + f" [{st.detector}]"
-            cv2.putText(frame, label, (x1, max(0, y1 - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
-            if pts is not None:
-                draw_hand_skeleton(frame, pts, color)
-            trails[slot].append((cx, cy, now))
-            cv2.circle(frame, (cx, cy), 5, color, -1)
-
-        cutoff = now - st.trail_secs
-        for slot in list(trails.keys()):
-            dq = trails[slot]
-            while dq and dq[0][2] < cutoff:
-                dq.popleft()
-            if slot >= max(1, hands_now) and not dets:
-                continue
-            color = TRAIL_COLORS[slot % len(TRAIL_COLORS)]
-            pts_t = list(dq)
-            for i in range(1, len(pts_t)):
-                age = now - pts_t[i][2]
-                a = max(0.15, 1.0 - age / st.trail_secs)
-                cv2.line(frame, pts_t[i - 1][:2], pts_t[i][:2],
-                         color, max(1, int(4 * a)), cv2.LINE_AA)
-            if pts_t:
-                cv2.putText(frame, f"trail {len(pts_t)}pts/{st.trail_secs:.0f}s",
-                            (pts_t[-1][0] + 10, pts_t[-1][1]),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
-
-        hud = (f"cam {st.cam} {W}x{H} fps {fps:.1f} "
-               f"trail {st.trail_secs:.0f}s [{st.detector}]  ESC=menu")
-        put_text(frame, hud, (10, H - 12), 0.55)
+        hands_now = draw_dets_and_trails(frame, dets, trails, now,
+                                         st.trail_secs, st.detector)
+        put_text(frame, (f"cam {st.cam} {W}x{H} fps {fps:.1f} "
+                         f"trail {st.trail_secs:.0f}s [{st.detector}]  ESC=menu"),
+                 (10, H - 12), 0.55)
         if show_help and not headless:
-            put_text(frame, "H help | S snapshot | D detector | +/- trail | ESC menu",
+            put_text(frame, "H help | C source | S snapshot | D detector | +/- trail",
                      (10, 24), 0.55)
-
         if headless:
             if n_frames == 1 or n_frames % 10 == 0:
                 print(f"[selftest] frame {n_frames}: hands={hands_now} "
@@ -425,13 +528,16 @@ def tracker_loop(st, headless=False, test_frames=30):
                       f"det={st.detector}, fps~{fps:.1f}")
                 break
             continue
-
         cv2.imshow("Hand Tracker", frame)
         key = cv2.waitKey(1) & 0xFF
         if key in (27, ord("q"), ord("Q")):
             break
         elif key in (ord("h"), ord("H")):
             show_help = not show_help
+        elif key in (ord("c"), ord("C")):
+            st.cam_pos = (st.cam_pos + 1) % len(st.cams)
+            action = "reopen"
+            break
         elif key in (ord("d"), ord("D")):
             if st.detector == "skin":
                 try:
@@ -461,15 +567,117 @@ def tracker_loop(st, headless=False, test_frames=30):
                 pass
     cap.release()
     if not headless:
-        cv2.destroyWindow("Hand Tracker")
-    return True
+        try:
+            cv2.destroyWindow("Hand Tracker")
+        except Exception:
+            pass
+    return action
+
+
+def oak_tracker_session(st, headless=False, test_frames=30):
+    """On-device palm+landmark NNs, host renders + trails. Returns menu/reopen."""
+    from oak_hands import hand_to_det
+    tracker = open_oak(st)
+    print(f"[oak-tracker] {tracker.img_w}x{tracker.img_h} on-device - ESC returns to menu")
+    trails = collections.defaultdict(collections.deque)
+    show_help = True
+    if not headless:
+        cv2.namedWindow("Hand Tracker", cv2.WINDOW_NORMAL)
+
+        def on_trail(v):
+            st.trail_secs = float(max(1, v))
+        cv2.createTrackbar("TrailSecs", "Hand Tracker",
+                           int(st.trail_secs), 10, on_trail)
+    n_frames = 0
+    t0 = time.time()
+    fps = 0.0
+    action = "menu"
+    try:
+        while True:
+            frame, hands = tracker.next_frame()
+            n_frames += 1
+            now = time.time()
+            if n_frames % 10 == 0:
+                fps = 10.0 / max(1e-6, now - t0)
+                t0 = now
+            H, W = frame.shape[:2]
+            dets = [hand_to_det(hd, W, H) for hd in hands]
+            hands_now = draw_dets_and_trails(frame, dets, trails, now,
+                                             st.trail_secs, "oak")
+            put_text(frame, (f"OAK-D {W}x{H} fps {fps:.1f} "
+                             f"trail {st.trail_secs:.0f}s [oak]  ESC=menu"),
+                     (10, H - 12), 0.55)
+            if show_help and not headless:
+                put_text(frame, "H help | C source | S snapshot | +/- trail",
+                         (10, 24), 0.55)
+            if headless:
+                if n_frames == 1 or n_frames % 10 == 0:
+                    print(f"[selftest-oak] frame {n_frames}: hands={hands_now} "
+                          f"fps~{fps:.1f}")
+                if n_frames >= test_frames:
+                    print(f"[selftest-oak] OK: {n_frames} frames, "
+                          f"last_hands={hands_now}, fps~{fps:.1f}")
+                    break
+                continue
+            cv2.imshow("Hand Tracker", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q"), ord("Q")):
+                break
+            elif key in (ord("h"), ord("H")):
+                show_help = not show_help
+            elif key in (ord("c"), ord("C")):
+                st.cam_pos = (st.cam_pos + 1) % len(st.cams)
+                action = "reopen"
+                break
+            elif key in (ord("s"), ord("S")):
+                fn = f"snapshots/oak_snap_{datetime.now():%Y%m%d_%H%M%S}.jpg"
+                cv2.imwrite(fn, frame)
+                print(f"[info] saved {fn}")
+            elif key in (ord("+"), ord("=")):
+                st.trail_secs = min(10, st.trail_secs + 1)
+                try:
+                    cv2.setTrackbarPos("TrailSecs", "Hand Tracker", int(st.trail_secs))
+                except Exception:
+                    pass
+            elif key in (ord("-"), ord("_")):
+                st.trail_secs = max(1, st.trail_secs - 1)
+                try:
+                    cv2.setTrackbarPos("TrailSecs", "Hand Tracker", int(st.trail_secs))
+                except Exception:
+                    pass
+    finally:
+        tracker.close()
+        if not headless:
+            try:
+                cv2.destroyWindow("Hand Tracker")
+            except Exception:
+                pass
+    return action
+
+
+def tracker_loop(st, headless=False, test_frames=30):
+    while True:
+        try:
+            if st.cam == "oak":
+                action = oak_tracker_session(st, headless, test_frames)
+            else:
+                action = usb_tracker_session(st, headless, test_frames)
+        except OakUnavailable as e:
+            print(f"[tracker] {e}")
+            return False
+        except SourceError as e:
+            print(f"[tracker] {e}")
+            return False
+        if headless or action == "menu":
+            return True
 
 
 # ----------------------------------------------------------------- main ---
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--camera", type=int, default=2)
+    ap.add_argument("--camera", default="2",
+                    help="camera source: 2 (HD USB), 0 (integrated), or oak")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--trail", type=float, default=3.0)
@@ -509,6 +717,8 @@ def main():
                     tracker_loop(st)
                 else:
                     break
+    except OakUnavailable as e:
+        print(f"[error] {e}")
     finally:
         if st.mp_backend is not None:
             st.mp_backend.close()
