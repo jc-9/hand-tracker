@@ -1,6 +1,6 @@
 """Trimmed helpers vendored from geaxgx/depthai_hand_tracker (MIT License,
 Copyright (c) 2021 geax) - mediapipe_utils.py: HandRegion container,
-rotated_rect_to_points(), find_isp_scale_params(). Only what the solo edge
+rotated_rect_to_points(), find_isp_scale_params(). Only what the duo edge
 pipeline needs; gesture/depth/body helpers omitted."""
 
 import numpy as np

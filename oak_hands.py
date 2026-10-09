@@ -7,13 +7,16 @@ All ML runs on the device (depthai v2 classic API):
       -> marshal'd dict to host ("manager_out") + BGR frames ("cam_out").
 
 Pipeline logic adapted from geaxgx/depthai_hand_tracker HandTrackerEdge
-(MIT License, Copyright (c) 2021 geax), solo mode, no depth/gesture/world
-landmarks. Host only renders + trails.
+(MIT License, Copyright (c) 2021 geax), duo mode (up to 2 hands: both
+palm candidates from the top-2 post-proc are landmarked via 2 inference
+threads; a 2nd hand with the same handedness label or a box overlapping
+the 1st is discarded), no depth/gesture/world landmarks. Host only
+renders + trails.
 
 Needs oak_models/palm_detection_sh4.blob,
       oak_models/hand_landmark_lite_sh4.blob,
       oak_models/pd_postproc_top2_sh1.blob,
-      oak_template_script_solo.py (device script template).
+      oak_template_script_duo.py (device script template).
 """
 
 import marshal
@@ -30,7 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PALM_BLOB = os.path.join(HERE, "oak_models", "palm_detection_sh4.blob")
 LANDMARK_BLOB = os.path.join(HERE, "oak_models", "hand_landmark_lite_sh4.blob")
 POSTPROC_BLOB = os.path.join(HERE, "oak_models", "pd_postproc_top2_sh1.blob")
-SCRIPT_TEMPLATE = os.path.join(HERE, "oak_template_script_solo.py")
+SCRIPT_TEMPLATE = os.path.join(HERE, "oak_template_script_duo.py")
 
 
 def hands_from_result(res, frame_size, pad_h=0, pad_w=0):
@@ -78,7 +81,8 @@ def hand_to_det(hand, frame_w, frame_h):
 
 
 class OakHandTracker:
-    """Solo edge hand tracker. Raises RuntimeError if no OAK device found."""
+    """Duo edge hand tracker (up to 2 hands).
+    Raises RuntimeError if no OAK device found."""
 
     def __init__(self, pd_score_thresh=0.5, lm_score_thresh=0.5,
                  internal_frame_height=640):
@@ -125,7 +129,7 @@ class OakHandTracker:
             _frame_size=self.frame_size, _crop_w=self.crop_w,
             _IF_XYZ='"""', _IF_USE_HANDEDNESS_AVERAGE="",
             _single_hand_tolerance_thresh=10,
-            _IF_USE_SAME_IMAGE='"""', _IF_USE_WORLD_LANDMARKS='"""',
+            _IF_USE_SAME_IMAGE="", _IF_USE_WORLD_LANDMARKS='"""',
         )
         code = re.sub(r'"{3}.*?"{3}', '', code, flags=re.DOTALL)
         code = re.sub(r'#.*', '', code)
@@ -183,7 +187,7 @@ class OakHandTracker:
 
         lm_nn = pipeline.create(dai.node.NeuralNetwork)
         lm_nn.setBlobPath(LANDMARK_BLOB)
-        lm_nn.setNumInferenceThreads(1)  # solo mode
+        lm_nn.setNumInferenceThreads(2)  # duo mode (2 landmark inferences/frame)
         pre_lm_manip.out.link(lm_nn.input)
         lm_nn.out.link(manager_script.inputs["from_lm_nn"])
         return pipeline

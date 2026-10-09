@@ -676,8 +676,8 @@ def tracker_loop(st, headless=False, test_frames=30):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--camera", default="2",
-                    help="camera source: 2 (HD USB), 0 (integrated), or oak")
+    ap.add_argument("--camera", default="oak",
+                    help="camera source: oak (Luxonis OAK-D), 2 (HD USB), or 0 (integrated)")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=720)
     ap.add_argument("--trail", type=float, default=3.0)
