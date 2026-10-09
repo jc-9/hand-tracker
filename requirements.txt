@@ -1,0 +1,6 @@
+# Pinned 2026-10-08: mediapipe 1.x native lib (122MB .so) gets SIGKILLed
+# on load in this env; 0.10.35 (33MB .so) works. Do NOT upgrade to 1.x
+# without re-running: venv/bin/python app.py --detector mediapipe --no-gui
+mediapipe==0.10.35
+opencv-contrib-python
+numpy

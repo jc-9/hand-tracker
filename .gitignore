@@ -1,0 +1,12 @@
+# Local env / generated - never commit
+venv/
+__pycache__/
+*.pyc
+
+# Downloaded at runtime by app.py (ensure_model)
+models/
+
+# Local captures and test artifacts
+snapshots/
+verify_*.jpg
+*.log

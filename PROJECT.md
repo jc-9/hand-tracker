@@ -1,0 +1,36 @@
+# Project: hand_tracker_100826
+- Area: COMPUTER_VISION
+- Started: 2026-10-08
+- Goal: Live hand-tracking app with detector boxes, motion-trail history, and live view + menu for mechanical lens adjustment.
+
+## Stack / environment
+- Python 3.13.15 venv at `venv/`
+- Deps pinned (see requirements.txt): mediapipe==0.10.35, opencv-contrib-python, numpy (2.5.3)
+- Cameras: HD USB Camera default (/dev/video2, OpenCV index 2); Integrated Camera (/dev/video0, index 0)
+- Run: `venv/bin/python app.py [--camera 2] [--width 1280 --height 720]` or `./run.sh`
+
+## How it works
+- `app.py`: menu app. `Menu` window: [S]etup / [T]racker / [Q]uit (+ C/R/D/trail shortcut keys, shared settings).
+- Camera Setup window (use once): live view + big FOCUS score + magnified center inset + crosshair for mechanical lens-ring adjustment. C/R/S snapshot, ESC back to menu.
+- Hand Tracker window: MediaPipe Hands (auto falls back to skin detector) -> bbox + 21 landmarks per hand, fading trails (default 3s, slider on window). No focus overlay here. ESC back to menu.
+- `--mode {menu,setup,tracker}` to start directly; `--no-gui` self-tests per mode.
+
+## Decisions
+- 2026-10-08: New area COMPUTER_VISION (user choice) + folder hand_tracker_100826.
+- 2026-10-08: Lens adjust = live view for MECHANICAL focus ring (user clarification), so focus-assist sharpness meter + magnified inset instead of software focus sliders. Software V4L2 focus sliders not applicable to manual lens.
+- 2026-10-08: Default HD USB Camera (index 2) per user choice; runtime switch supported.
+- 2026-10-08: Python 3.13 venv (not system 3.14) for mediapipe compatibility.
+- 2026-10-08: ENV FIX root cause — mediapipe 1.1.0's libmediapipe.so (122MB) gets SIGKILLed (exit 137) at create_from_options even in IMAGE mode and with MEDIAPIPE_DISABLE_GPU=1; ldd clean, RAM plentiful (7.9G avail). Fix: downgrade to mediapipe==0.10.35 (33MB .so, tasks-only wheel, no legacy solutions API), which inits EGL/Mesa+XNNPACK fine. Pinned in requirements.txt with DO-NOT-UPGRADE note. Deleted 623MB broken venv. Fresh venv rebuilt in place (mv breaks venv shebangs — do not mv venvs).
+
+## Session log
+- 2026-10-08: Created project folder, app scaffold. Next: install deps, verify.
+- 2026-10-08: Built app.py (Tasks HandLandmarker + skin fallback, trails, focus-assist). MediaPipe 1.1.0 native create_from_options gets SIGKILLed (exit 137) in this env even for IMAGE mode, so default path verified is --detector skin. Verified: 40-frame headless run cam2 1280x720 OK (10fps, hands=1, focus~47); 30-frame trail test OK (25/30 det, trail len 25, verify_trails.jpg 71KB). CIFS find clean. Next: live GUI run `./run.sh`, turn mechanical focus ring to peak FOCUS score, press D to retry MediaPipe if env fixed.
+- 2026-10-08: ENV FIXED. Verified MediaPipe path: 30-frame headless run `--detector mediapipe` cam2 1280x720 OK (det=mediapipe, ~10fps, exit 0); `--detector auto` now resolves to mediapipe; VIDEO-mode detect_for_video verified on 15 live frames. hands=0 in tests = no hand in frame, pipeline itself green. Skin detector kept as fallback (D key). Next: live GUI `./run.sh` with a hand in view to see boxes+trails.
+- 2026-10-08: GUI launched (PID 1511141, ./run.sh). hyprctl confirms mapped windows Hand Tracker + Controls (XWayland). Qt wayland/font warnings cosmetic. Next: user adjusts mechanical focus to peak FOCUS score, then Q to quit.
+- 2026-10-08: User reported 2nd window (Controls) renders black — Qt/XWayland glitch. Fix: removed Controls window, TrailSecs trackbar now on main Hand Tracker window. Restarted (PID 1525698); hyprctl shows only Hand Tracker mapped. Verify with user.
+- 2026-10-08: Restructured per user request: menu app (Menu window: S=setup, T=tracker, Q=quit). Focus zoom lives ONLY in Camera Setup window; tracker has no focus overlay. Verified: headless tracker 20 frames mediapipe OK; headless setup 20 frames + verify_setup.jpg (212KB) OK; Menu window mapped on screen (PID 1536102). CIFS clean.
+- 2026-10-08: Menu launcher: ~/.local/share/applications/hand-tracker.desktop (Name=Hand Tracker, Icon=camera-web, AudioVideo), desktop-file-validate clean, DB updated. run.sh has flock single-instance guard (relaunch notifies instead of double-grabbing cam). Lesson: gtk-launch blocks — launch detached via setsid+nohup. Verified end-to-end: killed old inst, gtk-launch hand-tracker -> Menu mapped (PID 1593543). Search "Hand Tracker" in the app menu to launch.
+- 2026-10-08: Custom icon (user asked: hand + bounding box): assets/make_icon.py draws white hand pictogram in green detector box on dark rounded square; SVG + PNG 48/64/128/256. v1 fingers merged (mitten) -> spread/slimmed, verified visually. Installed to hicolor theme, .desktop Icon=hand-tracker, icon cache rebuilt. Verified Gtk has_icon=True, desktop-validate clean, CIFS clean.
+
+## Open questions
+- None. Future: record trail video, handedness labels, multi-cam side-by-side.
